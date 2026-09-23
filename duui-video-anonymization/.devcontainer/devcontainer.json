@@ -1,0 +1,7 @@
+{
+  "name": "duui-video-anonymization",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": ["--network=host"]
+}
