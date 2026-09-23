@@ -1,0 +1,7 @@
+.git
+.venv
+target
+src/test
+.devcontainer
+**/__pycache__
+**/*.pyc
