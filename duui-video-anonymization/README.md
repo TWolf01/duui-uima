@@ -8,17 +8,18 @@ From this directory:
 
 ```bash
 podman build -t duui-video-anonymization:1.0 -f src/main/docker/Dockerfile .
-podman run --rm -p 9717:9717 duui-video-anonymization:1.0
+podman run -d -p 9717 --name duui-video-anonymization localhost/duui-video-anonymization:1.0
+podman port duui-video-anonymization 9717/tcp
 ```
 
-The service runs at `http://localhost:9717`. It uses `http://anduin.hucompute.org:40581` for faces and `http://anduin.hucompute.org:38455` for speakers. Override these with `DUUI_FACE_ANON_URL` and `DUUI_SPEAKER_ANON_URL`; use `DUUI_DOWNSTREAM_TIMEOUT_SECONDS` for long recordings.
+Podman chooses the host port shown by `podman port`; use that port in the DUUI URL. It uses `http://anduin.hucompute.org:40581` for faces and `http://anduin.hucompute.org:38455` for speakers. Override these with `DUUI_FACE_ANON_URL` and `DUUI_SPEAKER_ANON_URL`; use `DUUI_DOWNSTREAM_TIMEOUT_SECONDS` for long recordings.
 
 ## DUUI usage
 
 Put the base64 video in the `src` feature of a `Video` annotation. The output appears in the target view:
 
 ```java
-composer.add(new DUUIRemoteDriver.Component("http://localhost:9717")
+composer.add(new DUUIRemoteDriver.Component("http://localhost:<published-port>")
     .withTargetView("anonymized_video")
     .build().withTimeout(1800));
 ```
@@ -27,7 +28,7 @@ The CAS language selects the speaker language (English if unspecified). Face opt
 
 ## Test
 
-With JDK 21 and the container running on port 9717, run:
+With the named container running, run:
 
 ```bash
 mvn test
