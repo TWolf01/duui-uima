@@ -26,16 +26,6 @@ composer.add(new DUUIRemoteDriver.Component("http://localhost:<published-port>")
 
 The CAS language selects the speaker language (English if unspecified). Face options such as `anon_type`, `redact_type`, and `frame_interval` can be passed with `.withParameter(...)`; see the [face component](../duui-face_anon/README.md) for options. `single_align` and `multiple_align` require `hf_token`.
 
-## Test
-
-With the named container running, run:
-
-```bash
-mvn test
-```
-
-The Java test sends `src/test/resources/Ukrainian.webm` through the live face and speaker services and saves `target/test-output/ukrainian-anonymized.mp4`.
-
 ## Cite
 
 Author: Tim Wolf. License: [AGPL-3.0](../LICENSE). Cite DUUI and this component:
