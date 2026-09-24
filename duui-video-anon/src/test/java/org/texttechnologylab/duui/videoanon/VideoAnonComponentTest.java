@@ -37,7 +37,7 @@ class VideoAnonComponentTest {
         Path input;
         if (override.isBlank()) {
             var resource = VideoAnonComponentTest.class.getResource("/videos/hope.webm");
-            assertNotNull(resource, "Missing test video: /videos/hope.webm");
+            assertNotNull(resource, "Missing test video: /videos/hope.webm"); //Source: https://commons.wikimedia.org/wiki/File:%27We_have_to_give_the_Ukrainian_people_hope%27.webm World Economic Forum, CC BY 3.0 <https://creativecommons.org/licenses/by/3.0>, via Wikimedia Commons
             input = Path.of(resource.toURI());
         } else {
             input = Path.of(override);
