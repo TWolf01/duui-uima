@@ -3,10 +3,12 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse, Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from media import extract_audio, mux_audio
+from pipeline import run_pipeline
 
 
 ROOT = Path(__file__).parent
@@ -15,6 +17,7 @@ app = FastAPI(title="duui-video-anon", version="1.0.0")
 
 class Video(BaseModel):
     src: str
+    mimetype: str | None = None
     length: float = -1
     fps: float = -1
     begin: int = 0
@@ -22,9 +25,10 @@ class Video(BaseModel):
 
 
 class ProcessRequest(BaseModel):
-    operation: Literal["extract", "mux"]
+    operation: Literal["pipeline", "extract", "mux"] = "pipeline"
     video: Video
     audio: str | None = None
+    options: dict[str, str] = Field(default_factory=dict)
 
 
 @app.get("/v1/typesystem")
@@ -61,15 +65,26 @@ async def process(raw_request: Request) -> dict:
         # DUUI's Lua output stream can arrive as a JSON-encoded string.
         if isinstance(data, str):
             data = json.loads(data)
+        if isinstance(data, dict) and data.get("options") == []:
+            data["options"] = {}
         request = ProcessRequest.model_validate(data)
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Invalid DUUI media request") from exc
     try:
         if request.operation == "extract":
-            return {"operation": "extract", "audio": extract_audio(request.video.src)}
+            audio = await run_in_threadpool(extract_audio, request.video.src)
+            return {"operation": "extract", "audio": audio}
+        if request.operation == "pipeline":
+            src, length, fps = await run_in_threadpool(
+                run_pipeline, request.video.src, request.video.mimetype, request.options)
+            return {"operation": "pipeline", "video": {
+                "src": src, "length": length, "fps": fps,
+                "begin": request.video.begin, "end": request.video.end
+            }}
         if request.audio is None:
             raise ValueError("Mux requires anonymized audio")
-        src, length, fps = mux_audio(request.video.src, request.audio)
+        src, length, fps = await run_in_threadpool(
+            mux_audio, request.video.src, request.audio)
         return {"operation": "mux", "video": {
             "src": src, "length": length, "fps": fps,
             "begin": request.video.begin, "end": request.video.end

@@ -13,7 +13,7 @@ import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRemoteDriver;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.annotation.type.Video;
 
-/** Runs the four remote DUUI stages for a single MP4 document. */
+/** Runs the four remote DUUI stages for a single video document. */
 public final class VideoAnonPipeline {
     private VideoAnonPipeline() { }
 
@@ -24,7 +24,7 @@ public final class VideoAnonPipeline {
 
     public static void main(String[] args) throws Exception {
         if (args.length != 2) {
-            throw new IllegalArgumentException("Usage: VideoAnonPipeline input.mp4 output.mp4");
+            throw new IllegalArgumentException("Usage: VideoAnonPipeline input.mp4|input.webm output.mp4");
         }
         Path input = Path.of(args[0]);
         Path output = Path.of(args[1]);
@@ -49,7 +49,8 @@ public final class VideoAnonPipeline {
             cas.setDocumentLanguage(setting("DUUI_LANGUAGE", "en"));
             Video video = new Video(cas, 0, 5);
             video.setSrc(Base64.getEncoder().encodeToString(Files.readAllBytes(input)));
-            video.setMimetype("video/mp4");
+            video.setMimetype(input.getFileName().toString().toLowerCase().endsWith(".webm")
+                    ? "video/webm" : "video/mp4");
             video.addToIndexes();
 
             composer.run(cas);

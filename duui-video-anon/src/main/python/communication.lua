@@ -13,13 +13,13 @@ local function parameter(params, key)
 end
 
 function serialize(inputCas, outputStream, parameters)
-    local operation = parameter(parameters, "operation")
-    if operation ~= "extract" and operation ~= "mux" then
-        error("duui-video-anon requires operation=extract or operation=mux")
+    local operation = parameter(parameters, "operation") or "pipeline"
+    if operation ~= "pipeline" and operation ~= "extract" and operation ~= "mux" then
+        error("Unsupported duui-video-anon operation")
     end
 
     local videos = JCasUtil:select(inputCas, Video):iterator()
-    if not videos:hasNext() then error("No face-anonymized Video in source view") end
+    if not videos:hasNext() then error("No Video in source view") end
     local video = videos:next()
     if videos:hasNext() then error("Expected exactly one Video per CAS") end
 
@@ -47,10 +47,17 @@ function serialize(inputCas, outputStream, parameters)
             src = video:getSrc(),
             length = video:getLength(),
             fps = video:getFps(),
+            mimetype = video:getMimetype(),
             begin = video:getBegin(),
             ["end"] = video:getEnd()
         },
-        audio = audio
+        audio = audio,
+        options = {
+            anon_type = parameter(parameters, "anon_type"),
+            redact_type = parameter(parameters, "redact_type"),
+            language = parameter(parameters, "language"),
+            hf_token = parameter(parameters, "hf_token")
+        }
     }))
 end
 
@@ -59,9 +66,9 @@ function deserialize(inputCas, inputStream)
     local result = json.decode(body)
     if result["operation"] == "extract" then
         inputCas:setSofaDataString(result["audio"] or "", "audio/wav")
-    elseif result["operation"] == "mux" then
+    elseif result["operation"] == "mux" or result["operation"] == "pipeline" then
         local data = result["video"]
-        if data == nil then error("Mux response has no Video") end
+        if data == nil then error("Video response is missing") end
         local video = luajava.newInstance("org.texttechnologylab.annotation.type.Video", inputCas)
         video:setSrc(data["src"])
         video:setLength(data["length"])
