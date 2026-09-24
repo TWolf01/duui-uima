@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 
 HERE = Path(__file__).resolve().parent
-FACE_URL = os.getenv("DUUI_FACE_ANON_URL", "http://anduin.hucompute.org:40581").rstrip("/")
+FACE_URL = os.getenv("DUUI_FACE_ANON_URL", "http://anduin.hucompute.org:42927").rstrip("/")
 SPEAKER_URL = os.getenv(
     "DUUI_SPEAKER_ANON_URL", "http://anduin.hucompute.org:38455"
 ).rstrip("/")
