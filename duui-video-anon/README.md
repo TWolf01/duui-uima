@@ -133,7 +133,7 @@ need enough memory for the video and audio data.
 
 ## Tests
 
-The Java integration test uses the face component's video fixture, checks the
+The Java integration test uses `src/test/resources/videos/hope.webm`, checks the
 CAS views, and saves `target/test-output/video-anonymized.mp4`. With all three
 services running, enable it with:
 

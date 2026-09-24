@@ -41,8 +41,15 @@ class VideoAnonPipelineTest {
     @Test
     @EnabledIfEnvironmentVariable(named = "DUUI_RUN_INTEGRATION", matches = "true")
     void anonymizesVideoWithFaceAndSpeakerPipeline() throws Exception {
-        Path input = Path.of(setting("duui.video.input", "DUUI_VIDEO_INPUT",
-                "../duui-face_anon/duui/test/resources/input/videos/Trump.mp4"));
+        String override = setting("duui.video.input", "DUUI_VIDEO_INPUT", "");
+        Path input;
+        if (override.isBlank()) {
+            var resource = VideoAnonPipelineTest.class.getResource("/videos/hope.webm");
+            assertNotNull(resource, "Missing test video: /videos/hope.webm");
+            input = Path.of(resource.toURI());
+        } else {
+            input = Path.of(override);
+        }
         byte[] inputBytes = Files.readAllBytes(input);
         assertTrue(inputBytes.length > 0);
 
@@ -57,7 +64,8 @@ class VideoAnonPipelineTest {
             cas.setDocumentLanguage("en");
             Video video = new Video(cas, 0, 5);
             video.setSrc(Base64.getEncoder().encodeToString(inputBytes));
-            video.setMimetype("video/mp4");
+            video.setMimetype(input.getFileName().toString().endsWith(".webm")
+                    ? "video/webm" : "video/mp4");
             video.addToIndexes();
 
             composer.run(cas);
