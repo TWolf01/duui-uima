@@ -121,6 +121,13 @@ Findings of the Association for Computational Linguistics: EMNLP 2023,
   url       = {https://aclanthology.org/2023.findings-emnlp.29},
   pages     = {385--399}
 }
+
+@misc{wolf2026duuivideoanon,
+  author       = {Wolf, Tim},
+  title        = {Video Anonymization as {DUUI} Component},
+  year         = {2026},
+  howpublished = {\url{https://github.com/texttechnologylab/duui-uima/tree/main/duui-video-anon}}
+}
 ```
 
 This component is distributed under the repository's [AGPL-3.0 license](../LICENSE).

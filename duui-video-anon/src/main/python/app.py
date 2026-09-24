@@ -12,7 +12,23 @@ from pipeline import run_pipeline
 
 
 ROOT = Path(__file__).parent
-app = FastAPI(title="duui-video-anon", version="1.0.0")
+app = FastAPI(
+    docs_url="/api",
+    redoc_url=None,
+    title="DUUI Video Anonymization",
+    description="Video anonymization for TTLab DUUI",
+    version="1.0",
+    terms_of_service="https://www.texttechnologylab.org/legal_notice/",
+    contact={
+        "name": "Tim Wolf",
+        "url": "https://www.texttechnologylab.org",
+        "email": "T.Wolf@em.uni-frankfurt.de",
+    },
+    license_info={
+        "name": "AGPL",
+        "url": "http://www.gnu.org/licenses/agpl-3.0.en.html",
+    },
+)
 
 
 class Video(BaseModel):
