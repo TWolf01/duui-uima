@@ -41,7 +41,7 @@ public final class VideoAnonPipeline {
                 setting("DUUI_FACE_ANON_URL", "http://127.0.0.1:9714"),
                 setting("DUUI_VIDEO_ANON_URL", "http://127.0.0.1:9715"),
                 setting("DUUI_SPEAKER_ANON_URL", "http://127.0.0.1:9716"),
-                mode, setting("DUUI_REDACT_TYPE", "blur"), token,
+                mode, setting("DUUI_REDACT_TYPE", "black"), token,
                 setting("DUUI_LANGUAGE", "en"));
         try {
             JCas cas = JCasFactory.createJCas();
