@@ -73,7 +73,10 @@ function deserialize(inputCas, inputStream)
     elseif result["operation"] == "mux" or result["operation"] == "pipeline" then
         local data = result["video"]
         if data == nil then error("Video response is missing") end
-        local video = luajava.newInstance("org.texttechnologylab.annotation.type.Video", inputCas)
+        -- Video results always have their own view, regardless of DUUI's target view.
+        local ok, videoView = pcall(function() return inputCas:getView("videoView") end)
+        if not ok then videoView = inputCas:createView("videoView") end
+        local video = luajava.newInstance("org.texttechnologylab.annotation.type.Video", videoView)
         video:setSrc(data["src"])
         video:setLength(data["length"])
         video:setFps(data["fps"])

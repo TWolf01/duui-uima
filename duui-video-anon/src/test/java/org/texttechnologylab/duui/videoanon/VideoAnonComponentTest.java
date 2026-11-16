@@ -56,7 +56,6 @@ class VideoAnonComponentTest {
                 .withParameter("anon_type", "redact")
                 .withParameter("redact_type", "black")
                 .withParameter("language", "en")
-                .withTargetView("output")
                 .build().withTimeout(7200));
         try {
             JCas cas = JCasFactory.createJCas();
@@ -70,7 +69,7 @@ class VideoAnonComponentTest {
 
             composer.run(cas);
 
-            List<Video> outputVideos = List.copyOf(JCasUtil.select(cas.getView("output"), Video.class));
+            List<Video> outputVideos = List.copyOf(JCasUtil.select(cas.getView("videoView"), Video.class));
             assertEquals(1, outputVideos.size());
             Video output = outputVideos.get(0);
             assertEquals(video.getBegin(), output.getBegin());
