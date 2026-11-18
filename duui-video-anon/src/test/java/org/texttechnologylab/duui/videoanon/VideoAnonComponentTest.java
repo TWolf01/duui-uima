@@ -4,24 +4,51 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRemoteDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaCommunicationLayer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.annotation.type.Video;
 
 /** Integration test against the video anonymization component as one DUUI service. */
 class VideoAnonComponentTest {
+    @Test
+    void serializesVideoOptionsWithoutDuuiDriverSettings() throws Exception {
+        var options = Map.of("sampling_mode", "adaptive", "frame_interval", "3",
+                "segment_duration", "2.5", "representative_frames", "4", "mode", "redact",
+                "language", "de", "width", "720");
+        var component = new DUUIRemoteDriver.Component("http://localhost");
+        options.forEach(component::withParameter);
+        var parameters = component.build().withTimeout(3600).getParameters();
+
+        var layer = new DUUILuaCommunicationLayer(
+                Files.readString(Path.of("src/main/python/communication.lua")), "video",
+                new DUUILuaContext().withJsonLibrary());
+        JCas cas = JCasFactory.createJCasFromPath("src/main/python/typesystem.xml");
+        Video video = new Video(cas, 0, 0);
+        video.setSrc("dmlkZW8=");
+        video.addToIndexes();
+
+        var output = new ByteArrayOutputStream();
+        layer.serialize(cas, output, parameters, "_InitialView");
+        var request = new JSONObject(output.toString(StandardCharsets.UTF_8));
+        assertEquals(options, request.getJSONObject("options").toMap());
+    }
+
     private static String setting(String property, String environment, String fallback) {
         String value = System.getProperty(property);
         if (value == null || value.isBlank()) {

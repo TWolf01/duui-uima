@@ -18,6 +18,15 @@ function serialize(inputCas, outputStream, parameters)
         error("Unsupported duui-video-anon operation")
     end
 
+    local options = {}
+    for key, value in pairs(parameters or {}) do
+        -- DUUI includes driver settings in the same table as component parameters.
+        if key ~= "operation" and key ~= "audio_view" and key ~= "timeout"
+            and key ~= "websocket" and key ~= "websocketElements" then
+            options[key] = tostring(value)
+        end
+    end
+
     local video = JCasUtil:selectSingle(inputCas, Video)
     local src = video:getSrc()
     if src == nil or tostring(src):match("^%s*$") then
@@ -53,12 +62,7 @@ function serialize(inputCas, outputStream, parameters)
             ["end"] = video:getEnd()
         },
         audio = audio,
-        options = {
-            anon_type = parameter(parameters, "anon_type"),
-            redact_type = parameter(parameters, "redact_type"),
-            language = parameter(parameters, "language"),
-            hf_token = parameter(parameters, "hf_token")
-        }
+        options = options
     }))
 end
 

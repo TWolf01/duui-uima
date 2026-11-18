@@ -4,6 +4,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.fit.util.JCasUtil;
@@ -56,15 +57,25 @@ public final class VideoAnonPipeline {
 
         String faceUrl = requiredUrl("DUUI_FACE_ANON_URL");
         DUUIComposer composer = newComposer();
-        composer.add(new DUUIRemoteDriver.Component(faceUrl)
+        var component = new DUUIRemoteDriver.Component(faceUrl)
                 .withName("face-anonymization")
                 .withParameter("anon_type", mode)
                 .withParameter("redact_type", setting("DUUI_REDACT_TYPE", "black"))
-                .withParameter("hf_token", token)
-                .withParameter("sampling_mode", "uniform")
-                .withParameter("frame_interval", "1")
-                .withTargetView("face_anonymized")
-                .build().withTimeout(3600));
+                .withParameter("sampling_mode", setting("DUUI_FACE_SAMPLING_MODE", "uniform"))
+                .withParameter("frame_interval", setting("DUUI_FACE_FRAME_INTERVAL", "1"))
+                .withTargetView("face_anonymized");
+        for (String key : List.of("segment_duration", "representative_frames", "face_type",
+                "blur", "pixel", "anon_degree", "diffusion_model", "clip_model", "seed",
+                "guidance", "inference_steps", "model_ttl_seconds", "model_cache_size")) {
+            String value = setting("DUUI_FACE_" + key.toUpperCase(Locale.ROOT), "");
+            if (!value.isEmpty()) {
+                component.withParameter(key, value);
+            }
+        }
+        if (!mode.equals("redact")) {
+            component.withParameter("hf_token", token);
+        }
+        composer.add(component.build().withTimeout(3600));
         try {
             JCas cas = JCasFactory.createJCas();
             Video video = new Video(cas, 0, 0);

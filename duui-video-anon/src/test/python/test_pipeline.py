@@ -1,6 +1,7 @@
 import base64
 import asyncio
 import json
+import subprocess
 import sys
 import threading
 import unittest
@@ -24,7 +25,7 @@ class PipelineOrchestrationTest(unittest.TestCase):
         extracted_audio = base64.b64encode(b"extracted audio").decode("ascii")
         calls = []
 
-        def java_stage(stage, input_path, output_path, environment, root):
+        def java_stage(stage, input_path, output_path, environment):
             calls.append((stage, input_path.read_bytes()))
             output_path.write_bytes(b"face video" if stage == "face" else b"anonymized audio")
 
@@ -57,7 +58,7 @@ class PipelineOrchestrationTest(unittest.TestCase):
         video = base64.b64encode(b"input video").decode("ascii")
         calls = []
 
-        def java_stage(stage, input_path, output_path, environment, root):
+        def java_stage(stage, input_path, output_path, environment):
             calls.append(stage)
             output_path.write_bytes(b"face video")
 
@@ -81,7 +82,7 @@ class ConcurrentRequestsTest(unittest.IsolatedAsyncioTestCase):
         original_tokens = limiter.total_tokens
         limiter.total_tokens = 2
 
-        def java_stage(stage, input_path, output_path, environment, root):
+        def java_stage(stage, input_path, output_path, environment):
             log_info(f"Worker {stage}: {input_path.read_bytes().decode('ascii')}")
             if stage == "face":
                 both_face_stages_started.wait(timeout=10)

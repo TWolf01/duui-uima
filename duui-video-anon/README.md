@@ -22,7 +22,13 @@ and Russian.
 |---|---|---|
 | `anon_type` | `redact` | `redact`, `single_align`, or `multiple_align` |
 | `redact_type` | `black` | `blur`, `black`, or `pixel` when redacting faces |
+| `face_type`, `blur`, `pixel` | Face service defaults | Redaction scope, positive odd blur kernel size, and positive pixelation setting |
+| `sampling_mode` | `uniform` | `uniform` or `adaptive` |
+| `frame_interval` | `1` | Process every Nth frame in uniform mode |
+| `segment_duration`, `representative_frames` | `10.0`, `5` | Adaptive segment length in seconds and representative frames per segment |
 | `hf_token` | empty | Required for generative face anonymization |
+| `anon_degree`, `diffusion_model`, `clip_model`, `seed`, `guidance`, `inference_steps` | Face service defaults | Generative face settings |
+| `model_ttl_seconds`, `model_cache_size` | Face service defaults | Generative model cache settings |
 | `language` | `en` | Language passed to speaker anonymization |
 
 Pass these as DUUI component parameters. Environment variables `DUUI_FACE_MODE`,
@@ -30,9 +36,10 @@ Pass these as DUUI component parameters. Environment variables `DUUI_FACE_MODE`,
 `DUUI_FACE_ANON_URL` and `DUUI_SPEAKER_ANON_URL` on the container to the URLs of
 the running services. `MAX_MEDIA_BYTES` defaults to 500 MiB.
 
-The runner sets face sampling to `uniform` with `frame_interval=1` to keep the
-video timeline aligned with the audio. See the face component's README for its
-additional model settings.
+`mode` is accepted as a legacy alias when `anon_type` is omitted. The video
+pipeline returns HTTP 422 for custom output dimensions, `vis_input=true`,
+`anon_type=swap`, and invalid option values. Face and speaker stage failures
+report the failing stage without exposing upstream diagnostics.
 
 Both service URLs are required HTTP(S) URLs. The video service validates them
 at startup and exits immediately if either is missing or malformed.

@@ -107,9 +107,11 @@ async def process(raw_request: Request) -> dict:
         if isinstance(data, dict) and data.get("options") == []:
             data["options"] = {}
         request = ProcessRequest.model_validate(data)
-    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+    except (json.JSONDecodeError, ValidationError, ValueError):
+        request = None
+    if request is None:
         log_warn("Invalid DUUI media request")
-        raise HTTPException(status_code=422, detail="Invalid DUUI media request") from exc
+        raise HTTPException(status_code=422, detail="Invalid DUUI media request")
     log_info(f"Starting {request.operation} request")
     try:
         if request.operation == "extract":
