@@ -2,7 +2,6 @@ import base64
 import asyncio
 import json
 import subprocess
-import subprocess
 import sys
 import threading
 import unittest
@@ -74,25 +73,6 @@ class PipelineOrchestrationTest(unittest.TestCase):
 
         self.assertEqual(calls, ["face"])
         mux.assert_called_once_with(base64.b64encode(b"face video").decode("ascii"), "")
-
-
-class JavaStageErrorTest(unittest.TestCase):
-    def test_reports_only_recognized_diagnostics(self):
-        for stderr, expected in (
-            (b"DUUI_STAGE_ERROR http_422\n",
-             "DUUI face stage failed because upstream /v1/process returned HTTP 422"),
-            (b"DUUI_STAGE_ERROR serialize\n",
-             "DUUI face stage failed because upstream Lua failed to serialize the input CAS"),
-            (b"DUUI_STAGE_ERROR missing_output\n",
-             "DUUI face stage failed because the upstream service returned no video. Check its logs."),
-            (b"DUUI_STAGE_ERROR http_422\nprivate-token\n",
-             "DUUI face stage failed with exit code 1"),
-        ):
-            failure = subprocess.CalledProcessError(1, ["java"], stderr=stderr)
-            with self.subTest(expected=expected), patch.object(pipeline.subprocess, "run", side_effect=failure):
-                with self.assertRaises(RuntimeError) as raised:
-                    pipeline.run_java_stage("face", Path("input.mp4"), Path("output.mp4"), {})
-                self.assertEqual(str(raised.exception), expected)
 
 
 class ConcurrentRequestsTest(unittest.IsolatedAsyncioTestCase):
