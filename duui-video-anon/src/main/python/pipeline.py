@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import math
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -150,10 +151,28 @@ def run_java_stage(stage: str, input_path: Path, output_path: Path,
         stage, str(input_path), str(output_path),
     ]
     try:
-        # DUUI and upstream services can include request parameters in diagnostics.
+        # Discard DUUI output. The Java runner emits a fixed diagnostic code on stderr.
         subprocess.run(command, env=environment, check=True, timeout=7200,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as exc:
+        match = re.fullmatch(rb"DUUI_STAGE_ERROR ([a-z0-9_]+)\r?\n", exc.stderr or b"")
+        code = match[1].decode("ascii") if match else ""
+        status = re.fullmatch(r"http_([1-5][0-9]{2})", code)
+        if status:
+            detail = f"upstream /v1/process returned HTTP {status[1]}"
+        else:
+            media_kind = "video" if stage == "face" else "audio"
+            detail = {
+                "missing_output": f"the upstream service returned no {media_kind}. Check its logs.",
+                "timeout": "upstream request timed out",
+                "unreachable": "the runner could not reach the upstream service",
+                "serialize": "upstream Lua failed to serialize the input CAS",
+                "deserialize": "upstream Lua failed to deserialize the response",
+                "lua": "upstream Lua communication layer failed",
+                "java_dependencies": "the Java runner could not load a dependency",
+            }.get(code)
+        if detail:
+            raise RuntimeError(f"DUUI {stage} stage failed because {detail}") from None
         raise RuntimeError(f"DUUI {stage} stage failed with exit code {exc.returncode}") from None
     except FileNotFoundError as exc:
         raise RuntimeError("Java 21 is required by duui-video-anon") from exc

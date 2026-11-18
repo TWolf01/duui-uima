@@ -1,21 +1,33 @@
 package org.texttechnologylab.duui.videoanon;
 
+import java.io.InvalidObjectException;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.net.ConnectException;
+import java.net.UnknownHostException;
+import java.net.http.HttpTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 import org.apache.uima.fit.factory.JCasFactory;
 import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
+import org.luaj.vm2.LuaError;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.DUUIComposer;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.driver.DUUIRemoteDriver;
+import org.texttechnologylab.DockerUnifiedUIMAInterface.exception.CommunicationLayerException;
 import org.texttechnologylab.DockerUnifiedUIMAInterface.lua.DUUILuaContext;
 import org.texttechnologylab.annotation.type.Video;
 
 /** Runs one remote DUUI stage; Python handles the local media stages. */
 public final class VideoAnonPipeline {
+    // DUUI 1.5.5 includes the HTTP status and the raw upstream body in this exception.
+    private static final Pattern HTTP_ERROR = Pattern.compile("^Expected response 200, got ([1-5][0-9]{2}):");
+
     private VideoAnonPipeline() { }
 
     private static String setting(String name, String defaultValue) {
@@ -31,19 +43,66 @@ public final class VideoAnonPipeline {
         return value;
     }
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         if (args.length != 3 || !List.of("face", "speaker").contains(args[0])) {
             throw new IllegalArgumentException(
                     "Usage: VideoAnonPipeline face|speaker input.mp4|input.wav output.mp4|output.wav");
         }
-        Path input = Path.of(args[1]);
-        Path output = Path.of(args[2]);
-        if (args[0].equals("face")) {
-            runFace(input, output);
-        } else {
-            runSpeaker(input, output);
+        PrintStream diagnostic = System.err;
+        // Only the diagnostic code below should reach the parent process.
+        System.setErr(new PrintStream(OutputStream.nullOutputStream()));
+        try {
+            Path input = Path.of(args[1]);
+            Path output = Path.of(args[2]);
+            if (args[0].equals("face")) {
+                runFace(input, output);
+            } else {
+                runSpeaker(input, output);
+            }
+        } catch (Exception | LinkageError failure) {
+            diagnostic.println("DUUI_STAGE_ERROR " + failureCode(failure));
+            System.exit(1);
         }
     }
+
+    private static String failureCode(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (cause instanceof InvalidObjectException && message != null) {
+                var status = HTTP_ERROR.matcher(message);
+                if (status.find()) {
+                    return "http_" + status.group(1);
+                }
+            }
+            if (cause instanceof MissingOutputException) {
+                return "missing_output";
+            }
+            if (cause instanceof HttpTimeoutException) {
+                return "timeout";
+            }
+            if (cause instanceof ConnectException || cause instanceof UnknownHostException
+                    || "Could not reach endpoint after 50 tries!".equals(message)) {
+                return "unreachable";
+            }
+            if (cause instanceof CommunicationLayerException && message != null) {
+                if (message.startsWith("Caught LuaError while calling serialize(")) {
+                    return "serialize";
+                }
+                if (message.startsWith("Caught LuaError while calling deserialize(")) {
+                    return "deserialize";
+                }
+            }
+            if (cause instanceof LuaError) {
+                return "lua";
+            }
+            if (cause instanceof LinkageError) {
+                return "java_dependencies";
+            }
+        }
+        return "unknown";
+    }
+
+    private static final class MissingOutputException extends Exception { }
 
     private static void runFace(Path input, Path output) throws Exception {
         String mode = setting("DUUI_FACE_MODE", "redact");
@@ -88,7 +147,7 @@ public final class VideoAnonPipeline {
             List<Video> videos = List.copyOf(JCasUtil.select(cas.getView("face_anonymized"), Video.class));
             if (videos.size() != 1 || videos.get(0).getSrc() == null
                     || videos.get(0).getSrc().isBlank()) {
-                throw new IllegalStateException("Face stage produced no video");
+                throw new MissingOutputException();
             }
             Files.write(output, Base64.getDecoder().decode(videos.get(0).getSrc()));
         } finally {
@@ -121,7 +180,7 @@ public final class VideoAnonPipeline {
                 }
             }
             if (audio == null) {
-                throw new IllegalStateException("Speaker stage produced no audio view");
+                throw new MissingOutputException();
             }
             Files.write(output, Base64.getDecoder().decode(audio));
         } finally {

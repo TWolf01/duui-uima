@@ -38,8 +38,10 @@ the running services. `MAX_MEDIA_BYTES` defaults to 500 MiB.
 
 `mode` is accepted as a legacy alias when `anon_type` is omitted. The video
 pipeline returns HTTP 422 for custom output dimensions, `vis_input=true`,
-`anon_type=swap`, and invalid option values. Face and speaker stage failures
-report the failing stage without exposing upstream diagnostics.
+`anon_type=swap`, and invalid option values. Face and speaker stage errors
+identify the failure when possible, including upstream HTTP status, Lua
+serialization failures, and missing output. Upstream response bodies and raw
+Java logs are omitted because they can contain request credentials.
 
 Both service URLs are required HTTP(S) URLs. The video service validates them
 at startup and exits immediately if either is missing or malformed.
