@@ -10,6 +10,7 @@ RUN pip install torch==2.12.0 torchvision==0.27.0 torchaudio==2.11.0 --index-url
 ARG COMMUNICATION_LUA=communication.lua
 COPY ./src/main/python/${COMMUNICATION_LUA} ./communication.lua
 COPY ./src/main/python/duui_anonymize.py ./duui_anonymize.py
+COPY ./src/main/python/arabic_latin_names.py ./arabic_latin_names.py
 COPY ./src/main/python/typesystem.xml ./typesystem.xml
 COPY ./requirements.txt ./requirements.txt
 

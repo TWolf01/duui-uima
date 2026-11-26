@@ -16,7 +16,7 @@ end
 
 -- Known option keys forwarded to the Python service.
 local OPTION_KEYS = {
-    "mode", "model", "device", "trust_remote_code", "exclude_labels",
+    "mode", "model", "device", "trust_remote_code", "exclude_labels", "pseudo_use_nationality",
     "context_window_length", "trim_whitespace",
     "output_mode", "discard_overlapping_predicted_spans",
 }

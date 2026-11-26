@@ -62,6 +62,7 @@ The redacted text is written to a secondary CAS view named `opf_redacted`.
 | `trust_remote_code` | bool | `false` | Required for `OpenMed/privacy-filter-nemotron` |
 | `device` | string | `auto` | `auto` (CUDA if available, else CPU), `cpu`, `cuda` (or `cuda:N` / `gpu`). `cuda` only works with the CUDA image started with GPU access (`--gpus all`); otherwise the request fails with HTTP 400 |
 | `mode` | string | `placeholder` | See modes below |
+| `pseudo_use_nationality` | bool | `true` | In pseudo mode, use NameBERT to select the Faker locale. Set to `false` to choose a Faker locale by writing script and skip NameBERT |
 | `placeholder` | string | `[{label}]` | Custom replacement text (placeholder mode only) |
 | `exclude_labels` | string | — | Comma-separated output labels to leave unchanged, e.g. `private_date,private_url`. Excluded labels produce no annotations. Matching is case-sensitive and model-specific |
 | `selection_begin` | int | — | Start offset of the text window to analyse |
@@ -87,9 +88,13 @@ Example: `docker run -e MODEL_TTL_SECONDS=600 -p 9714:9714 docker.texttechnology
 |---|---|
 | `placeholder` **(default)** | Detected spans replaced with `[label]`, e.g. `[private_person]` |
 | `remove` | Detected spans deleted from the text |
-| `pseudo` | Detected personal names are replaced with random Faker names. EthniData's nationality estimate selects the Faker locale where available. Repeated names reuse the same replacement within the document. Other detected spans use the same `[label]` replacements as placeholder mode. |
+| `pseudo` | Detected personal names are replaced with random Faker names. Repeated names reuse the same replacement within the document. Other detected spans use the same `[label]` replacements as placeholder mode. |
 
-Pseudo mode uses Faker's default locale when the predicted country has no matching locale.
+With `pseudo_use_nationality` enabled, pseudo mode prefers a Faker name provider for the predicted country, then tries a name provider in the same language. For example, Jordan falls back to the generic Arabic name provider (`ar_AA`). If neither is available, pseudo mode uses Faker's default locale. With `pseudo_use_nationality` set to `false`, it uses the default Faker locale for Latin-script names and selects a script-compatible provider for supported non-Latin scripts.
+
+Pseudo mode preserves the source name's writing script. When an Arabic locale is selected for a Latin-script name, a custom Faker provider combines given names and surnames from a bundled list of attested Latin spellings. The list comes from the [Bayanat Labs Arabic–Latin Name Variants dataset](https://huggingface.co/datasets/Bayanat-Labs/arabic-latin-name-variants/tree/ceb1906e957768dbd36f21bf53ec8230eaebaaf3) (CC0 1.0, derived from Wikidata). If the provider cannot produce a replacement in the source script, pseudo mode uses the label placeholder.
+
+The first pseudo request containing a name with `pseudo_use_nationality` enabled loads the 712 MB NameBERT checkpoint from the Hugging Face cache or downloads it if needed. NameBERT uses the request's `device` and runs inference locally. Its weights are for noncommercial research use. See the [NameBERT paper](https://proceedings.mlr.press/v318/ming26a.html) and [weight terms and attribution](https://github.com/Ruixin-J-Shi/nameBERT_nationality_classification/blob/main/DATA_TERMS.md).
 
 ---
 

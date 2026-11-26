@@ -8,27 +8,34 @@ import threading
 import time
 from collections import OrderedDict
 from typing import Any, List, Optional
+from unicodedata import normalize
 
 import pycountry
 import torch
 import uvicorn
 from cassis import load_typesystem
-from ethnidata import EthniData
 from faker import Faker
 from faker.config import AVAILABLE_LOCALES, DEFAULT_LOCALE
+from faker.utils.loading import find_available_locales
 from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
+from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
-from transformers import TokenClassificationPipeline
+from transformers import TextClassificationPipeline, TokenClassificationPipeline
 from transformers import pipeline as hf_pipeline
+from unicodedataplus import script
+
+from arabic_latin_names import ArabicLatinNameProvider
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 DEFAULT_MODEL = "openai/privacy-filter"
+NAMEBERT_MODEL = "jxins/nameBERT-nationality-classification"
+NAMEBERT_REVISION = "0149d5f4f2d14f9a02f8baf65fdc4b05ea141ea2"
 
 SUPPORTED_MODELS = {
     "openai/privacy-filter",
@@ -42,6 +49,34 @@ MODE_PSEUDO = "pseudo"
 
 NAME_LABELS = {"private_person", "person", "person_name", "person_alias", "first_name", "last_name"}
 NAME_TITLES = re.compile(r"^(?:(?:dr|prof|mr|mrs|ms|mx)\.\s+)+", re.IGNORECASE)
+FAKER_PERSON_LOCALES = find_available_locales(["faker.providers.person"])
+# Prefer Kana over Han when a Japanese name mixes both scripts.
+FAKER_LOCALES_BY_SCRIPT = {
+    "Hiragana": "ja_JP",
+    "Katakana": "ja_JP",
+    "Arabic": "ar_AA",
+    "Armenian": "hy_AM",
+    "Bengali": "bn_BD",
+    "Cyrillic": "ru_RU",
+    "Devanagari": "hi_IN",
+    "Georgian": "ka_GE",
+    "Greek": "el_GR",
+    "Gujarati": "gu_IN",
+    "Hangul": "ko_KR",
+    "Han": "zh_CN",
+    "Hebrew": "he_IL",
+    "Oriya": "or_IN",
+    "Sinhala": "si_LK",
+    "Tamil": "ta_IN",
+    "Thai": "th_TH",
+}
+NAMEBERT_COUNTRY_ALIASES = {
+    "brunei": "BN",
+    "côte d’ivoire": "CI",
+    "russia": "RU",
+    "the gambia": "GM",
+    "turkey": "TR",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +327,26 @@ def _load_pipeline(model: str, device: str, trust_remote_code: bool = False):
     return _pipelines.get((model, device, trust_remote_code), load)
 
 
+def _load_namebert(device: str) -> TextClassificationPipeline:
+    def load():
+        logger.info("Loading NameBERT: device=%s", device)
+        metadata_path = hf_hub_download(NAMEBERT_MODEL, "meta.json", revision=NAMEBERT_REVISION)
+        with open(metadata_path, encoding="utf-8") as metadata_file:
+            metadata = json.load(metadata_file)
+        classifier = hf_pipeline(
+            task="text-classification",
+            model=NAMEBERT_MODEL,
+            revision=NAMEBERT_REVISION,
+            device=device,
+            truncation=True,
+            max_length=metadata["MAX_LEN"],
+        )
+        classifier.model.config.id2label = {int(index): label for index, label in metadata["idx2label"].items()}
+        return classifier
+
+    return _pipelines.get((NAMEBERT_MODEL, device, False), load)
+
+
 def _resolve_selection(options: dict[str, Any], text_length: int) -> Optional[tuple[int, int]]:
     sel = options.get("selection")
     if isinstance(sel, dict):
@@ -320,7 +375,7 @@ def _parse_exclude_labels(value: Any) -> set[str]:
     return {label.strip() for label in value if label.strip()}
 
 
-def _pseudonymize_names(text: str, spans: list[DetectedSpan]) -> None:
+def _pseudonymize_names(text: str, spans: list[DetectedSpan], device: str, use_nationality: bool) -> None:
     predictor = None
     replacements: dict[tuple[str, str], str] = {}
     for span in spans:
@@ -337,28 +392,55 @@ def _pseudonymize_names(text: str, spans: list[DetectedSpan]) -> None:
             kind = "name" if " " in name else "first_name"
         key = (kind, name.casefold())
         if key not in replacements:
-            if predictor is None:
-                predictor = EthniData()
+            if use_nationality and predictor is None:
+                predictor = _load_namebert(device)
             replacements[key] = _fake_name(predictor, name, kind, span.placeholder)
         span.placeholder = replacements[key]
 
 
-def _fake_name(predictor: EthniData, name: str, kind: str, placeholder: str) -> str:
-    first, _, last = name.partition(" ")
-    if kind == "name":
-        prediction = predictor.predict_full_name(first, last)
-    else:
-        name_type = "last" if kind == "last_name" else "first"
-        prediction = predictor.predict_nationality(name, name_type=name_type)
+def _faker_locale(country_label: str) -> str:
+    label = normalize("NFC", country_label)
+    try:
+        country = pycountry.countries.lookup(NAMEBERT_COUNTRY_ALIASES.get(label, label))
+    except LookupError:
+        return DEFAULT_LOCALE
 
-    country_code = prediction["country"]
-    country = pycountry.countries.get(alpha_3=country_code) if country_code else None
-    locale = DEFAULT_LOCALE
-    if country is not None:
-        locale = next((loc for loc in AVAILABLE_LOCALES if loc.endswith(f"_{country.alpha_2}")), locale)
-    generate = getattr(Faker(locale), kind)
+    country_suffix = f"_{country.alpha_2}"
+    for locale in FAKER_PERSON_LOCALES:
+        if locale.endswith(country_suffix):
+            return locale
+
+    # Faker's advertised locale list includes providers for other data types.
+    languages = {locale.split("_", 1)[0] for locale in AVAILABLE_LOCALES if locale.endswith(country_suffix)}
+    return next(
+        (locale for locale in FAKER_PERSON_LOCALES if locale.split("_", 1)[0] in languages),
+        DEFAULT_LOCALE,
+    )
+
+
+def _name_scripts(name: str) -> set[str]:
+    return {script(char) for char in name if char.isalpha()} - {"Common", "Inherited"}
+
+
+def _fake_name(predictor: TextClassificationPipeline | None, name: str, kind: str, placeholder: str) -> str:
+    source_scripts = _name_scripts(name)
+    if predictor is None:
+        locale = next(
+            (locale for name_script, locale in FAKER_LOCALES_BY_SCRIPT.items() if name_script in source_scripts),
+            DEFAULT_LOCALE,
+        )
+    else:
+        country_label = predictor(name, top_k=1)[0]["label"]
+        locale = _faker_locale(country_label)
+    faker = Faker(locale)
+    if source_scripts == {"Latin"} and locale.startswith("ar_"):
+        faker.add_provider(ArabicLatinNameProvider)
+    generate = getattr(faker, kind)
     for _ in range(10):
         replacement = generate()
+        replacement_scripts = _name_scripts(replacement)
+        if not replacement_scripts or (source_scripts and replacement_scripts - source_scripts):
+            continue
         if " ".join(replacement.split()).casefold() != name.casefold():
             return replacement
     return placeholder
@@ -408,6 +490,9 @@ def _process(request: DUUIRequest) -> DUUIResponse:
             f"(torch {torch.__version__}; use the CUDA image and start the container with GPU access)"
         )
     mode = str(options.get("mode", MODE_PLACEHOLDER))
+    pseudo_use_nationality = str(options.get("pseudo_use_nationality", True)).strip().lower()
+    if mode == MODE_PSEUDO and pseudo_use_nationality not in {"true", "false"}:
+        raise ValueError("pseudo_use_nationality must be true or false")
     exclude_labels = _parse_exclude_labels(options.get("exclude_labels"))
 
     logger.info("Processing: model=%s device=%s mode=%s text_length=%d", model, device, mode, len(request.text))
@@ -435,7 +520,7 @@ def _process(request: DUUIRequest) -> DUUIResponse:
         if item["entity_group"] not in exclude_labels
     ]
     if mode == MODE_PSEUDO:
-        _pseudonymize_names(request.text, spans)
+        _pseudonymize_names(request.text, spans, device, use_nationality=pseudo_use_nationality == "true")
 
     redacted_text = _build_redacted(request.text, spans, mode)
     if sel is not None:
