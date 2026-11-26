@@ -48,7 +48,7 @@ Use this model for multilingual EU documents or when GDPR Article 9 special-cate
 **Output:** `de.tudarmstadt.ukp.dkpro.core.api.anomaly.type.Anomaly` annotations on the default CAS view, each with:
 - `begin` / `end` — character offsets into the original text
 - `category` — entity label (e.g. `private_person`, `first_name`)
-- `description` — replacement text used (the placeholder string, or empty in remove mode)
+- `description` — replacement text used (a placeholder or pseudonym)
 
 The redacted text is written to a secondary CAS view named `opf_redacted`.
 
@@ -87,7 +87,9 @@ Example: `docker run -e MODEL_TTL_SECONDS=600 -p 9714:9714 docker.texttechnology
 |---|---|
 | `placeholder` **(default)** | Detected spans replaced with `[label]`, e.g. `[private_person]` |
 | `remove` | Detected spans deleted from the text |
-| `pseudo` | Input returned unchanged (stub — not yet implemented) |
+| `pseudo` | Detected personal names are replaced with random Faker names. EthniData's nationality estimate selects the Faker locale where available. Repeated names reuse the same replacement within the document. Other detected spans use the same `[label]` replacements as placeholder mode. |
+
+Pseudo mode uses Faker's default locale when the predicted country has no matching locale.
 
 ---
 

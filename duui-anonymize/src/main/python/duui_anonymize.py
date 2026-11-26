@@ -3,20 +3,26 @@ from __future__ import annotations
 import gc
 import logging
 import json
+import re
 import threading
 import time
 from collections import OrderedDict
 from typing import Any, List, Optional
 
+import pycountry
 import torch
 import uvicorn
 from cassis import load_typesystem
+from ethnidata import EthniData
+from faker import Faker
+from faker.config import AVAILABLE_LOCALES, DEFAULT_LOCALE
 from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
+from transformers import TokenClassificationPipeline
 from transformers import pipeline as hf_pipeline
 
 logger = logging.getLogger(__name__)
@@ -32,7 +38,10 @@ SUPPORTED_MODELS = {
 
 MODE_REMOVE = "remove"
 MODE_PLACEHOLDER = "placeholder"  # default: replace with [category]
-MODE_PSEUDO = "pseudo"            # TODO: not yet supported
+MODE_PSEUDO = "pseudo"
+
+NAME_LABELS = {"private_person", "person", "person_name", "person_alias", "first_name", "last_name"}
+NAME_TITLES = re.compile(r"^(?:(?:dr|prof|mr|mrs|ms|mx)\.\s+)+", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +266,17 @@ class _PipelineCache:
 _pipelines = _PipelineCache(ttl=settings.model_ttl_seconds, maxsize=settings.model_cache_size)
 
 
+class _PIITokenClassificationPipeline(TokenClassificationPipeline):
+    def get_tag(self, entity_name: str) -> tuple[str, str]:
+        # Privacy Filter models use BIOES. For grouping, an end tag continues
+        # the current span and a singleton starts its own span.
+        if entity_name.startswith("E-"):
+            return "I", entity_name[2:]
+        if entity_name.startswith("S-"):
+            return "B", entity_name[2:]
+        return super().get_tag(entity_name)
+
+
 def _load_pipeline(model: str, device: str, trust_remote_code: bool = False):
     def load():
         logger.info("Loading pipeline: model=%s device=%s trust_remote_code=%s", model, device, trust_remote_code)
@@ -264,6 +284,7 @@ def _load_pipeline(model: str, device: str, trust_remote_code: bool = False):
             task="token-classification",
             model=model,
             aggregation_strategy="simple",
+            pipeline_class=_PIITokenClassificationPipeline,
             device=device,
             trust_remote_code=trust_remote_code,
         )
@@ -299,6 +320,50 @@ def _parse_exclude_labels(value: Any) -> set[str]:
     return {label.strip() for label in value if label.strip()}
 
 
+def _pseudonymize_names(text: str, spans: list[DetectedSpan]) -> None:
+    predictor = None
+    replacements: dict[tuple[str, str], str] = {}
+    for span in spans:
+        label = span.label.casefold()
+        if label not in NAME_LABELS:
+            continue
+        # Pipeline tokens can differ from the original spelling and whitespace.
+        name = " ".join(text[span.start:span.end].split())
+        name = NAME_TITLES.sub("", name)
+        if not name:
+            continue
+        kind = label
+        if label not in {"first_name", "last_name"}:
+            kind = "name" if " " in name else "first_name"
+        key = (kind, name.casefold())
+        if key not in replacements:
+            if predictor is None:
+                predictor = EthniData()
+            replacements[key] = _fake_name(predictor, name, kind, span.placeholder)
+        span.placeholder = replacements[key]
+
+
+def _fake_name(predictor: EthniData, name: str, kind: str, placeholder: str) -> str:
+    first, _, last = name.partition(" ")
+    if kind == "name":
+        prediction = predictor.predict_full_name(first, last)
+    else:
+        name_type = "last" if kind == "last_name" else "first"
+        prediction = predictor.predict_nationality(name, name_type=name_type)
+
+    country_code = prediction["country"]
+    country = pycountry.countries.get(alpha_3=country_code) if country_code else None
+    locale = DEFAULT_LOCALE
+    if country is not None:
+        locale = next((loc for loc in AVAILABLE_LOCALES if loc.endswith(f"_{country.alpha_2}")), locale)
+    generate = getattr(Faker(locale), kind)
+    for _ in range(10):
+        replacement = generate()
+        if " ".join(replacement.split()).casefold() != name.casefold():
+            return replacement
+    return placeholder
+
+
 def _build_redacted(text: str, spans: list[DetectedSpan], mode: str) -> str:
     """Apply mode transformation to text using already-computed spans."""
     if not spans:
@@ -309,8 +374,12 @@ def _build_redacted(text: str, spans: list[DetectedSpan], mode: str) -> str:
         if span.start < cursor:
             continue
         parts.append(text[cursor:span.start])
-        if mode == MODE_PLACEHOLDER:
-            parts.append(span.placeholder)   # e.g. [private_person]
+        if mode in (MODE_PLACEHOLDER, MODE_PSEUDO):
+            covered = text[span.start:span.end]
+            without_leading = covered.lstrip()
+            parts.append(covered[:len(covered) - len(without_leading)])
+            parts.append(span.placeholder)
+            parts.append(without_leading[len(without_leading.rstrip()):])
         # MODE_REMOVE: append nothing - the PII is deleted
         cursor = span.end
     parts.append(text[cursor:])
@@ -343,15 +412,6 @@ def _process(request: DUUIRequest) -> DUUIResponse:
 
     logger.info("Processing: model=%s device=%s mode=%s text_length=%d", model, device, mode, len(request.text))
     
-    # pseudo mode - not yet supported
-    if mode == MODE_PSEUDO:
-        return DUUIResponse(
-            text=request.text,
-            detected_spans=[],
-            redacted_text=request.text,
-            warning="pseudo mode is not yet supported - input returned unchanged",
-        )
-
     if not request.text:
         return DUUIResponse(text="", detected_spans=[], redacted_text="")
 
@@ -369,11 +429,13 @@ def _process(request: DUUIRequest) -> DUUIResponse:
             start=int(item["start"]) + offset,
             end=int(item["end"]) + offset,
             text=str(item["word"]).strip(),
-            placeholder=f"[{item['entity_group']}]" if mode == MODE_PLACEHOLDER else "",
+            placeholder=f"[{item['entity_group']}]" if mode in (MODE_PLACEHOLDER, MODE_PSEUDO) else "",
         )
         for item in raw
         if item["entity_group"] not in exclude_labels
     ]
+    if mode == MODE_PSEUDO:
+        _pseudonymize_names(request.text, spans)
 
     redacted_text = _build_redacted(request.text, spans, mode)
     if sel is not None:

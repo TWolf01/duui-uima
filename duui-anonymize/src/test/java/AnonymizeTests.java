@@ -264,11 +264,10 @@ public class AnonymizeTests {
         assertTrue(redacted.contains("[private_email]"), "Email should be replaced with its placeholder");
     }
 
-    /** Pseudo mode: not yet supported - service returns input unchanged with no annotations. */
     @Test
-    @DisplayName("Pseudo mode: not yet supported, returns input unchanged")
+    @DisplayName("Pseudo mode: replaces names with pseudonyms and emails with placeholders")
     void testPseudoMode() throws Exception {
-        String text = "Alice and Bob met at the Frankfurt main station.";
+        String text = "Please contact Alice Johnson at alice.johnson@example.com. Alice Johnson will reply tomorrow.";
         createCas("en", text);
 
         composer.add(new DUUIRemoteDriver.Component(SERVICE_URL)
@@ -276,9 +275,15 @@ public class AnonymizeTests {
         composer.run(cas);
 
         Collection<Anomaly> anomalies = collectAnomalies();
-        System.out.println("Anomaly count (pseudo mode): " + anomalies.size());
-        assertTrue(anomalies.isEmpty(),
-                "Pseudo mode (unsupported stub) should produce no Anomaly annotations");
+        Anomaly person = anomalies.stream()
+                .filter(a -> "private_person".equals(a.getCategory()))
+                .findFirst().orElseThrow();
+        String pseudonym = person.getDescription();
+        assertEquals("Alice Johnson", person.getCoveredText().strip());
+        assertFalse(pseudonym.equalsIgnoreCase("Alice Johnson"));
+        assertNotEquals("[private_person]", pseudonym);
+        assertEquals("Please contact " + pseudonym + " at [private_email]. " + pseudonym + " will reply tomorrow.",
+                extractRedactedText());
     }
 
     // -------------------------------------------------------------------
