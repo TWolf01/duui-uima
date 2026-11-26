@@ -6,9 +6,10 @@ import json
 import re
 import threading
 import time
-from collections import OrderedDict
-from typing import Any, List, Optional
-from unicodedata import normalize
+from collections import OrderedDict, defaultdict
+from itertools import pairwise
+from typing import Any, List, NamedTuple, Optional
+from unicodedata import category, normalize
 
 import pycountry
 import torch
@@ -47,7 +48,10 @@ MODE_REMOVE = "remove"
 MODE_PLACEHOLDER = "placeholder"  # default: replace with [category]
 MODE_PSEUDO = "pseudo"
 
-NAME_LABELS = {"private_person", "person", "person_name", "person_alias", "first_name", "last_name"}
+NAME_PART_LABELS = {"first_name", "last_name"}
+NAME_LABELS = {"private_person", "person", "person_name", "person_alias"} | NAME_PART_LABELS
+NAME_FRAGMENT_LABELS = NAME_LABELS | {"user_name"}
+NAME_JOINERS = "-'’‐‑"
 NAME_TITLES = re.compile(r"^(?:(?:dr|prof|mr|mrs|ms|mx)\.\s+)+", re.IGNORECASE)
 FAKER_PERSON_LOCALES = find_available_locales(["faker.providers.person"])
 # Prefer Kana over Han when a Japanese name mixes both scripts.
@@ -375,9 +379,120 @@ def _parse_exclude_labels(value: Any) -> set[str]:
     return {label.strip() for label in value if label.strip()}
 
 
+def _trimmed_bounds(text: str, span: DetectedSpan) -> tuple[int, int]:
+    covered = text[span.start:span.end]
+    return span.end - len(covered.lstrip()), span.start + len(covered.rstrip())
+
+
+def _name_word_char(char: str) -> bool:
+    return char.isalpha() or char in NAME_JOINERS or category(char).startswith("M")
+
+
+def _merge_name_fragments(text: str, spans: list[DetectedSpan], excluded: set[str]) -> list[DetectedSpan]:
+    merged: list[DetectedSpan] = []
+    for span in sorted(spans, key=lambda item: item.start):
+        if not merged or span.label in excluded:
+            merged.append(span)
+            continue
+        previous = merged[-1]
+        left, right = previous.label.casefold(), span.label.casefold()
+        if (previous.label in excluded or left not in NAME_FRAGMENT_LABELS
+                or right not in NAME_FRAGMENT_LABELS or left == right == "user_name"):
+            merged.append(span)
+            continue
+        left_start, left_end = _trimmed_bounds(text, previous)
+        right_start, right_end = _trimmed_bounds(text, span)
+        if (left_start >= left_end or right_start >= right_end or left_end > right_start
+                or text[left_end:right_start].strip(NAME_JOINERS)
+                or not all(_name_word_char(c) for c in text[left_end - 1] + text[right_start])):
+            merged.append(span)
+            continue
+
+        first_word = text[right_start:right_end].split(maxsplit=1)[0]
+        if ((left == "user_name" and not all(map(_name_word_char, text[left_start:left_end])))
+                or (right == "user_name" and not all(map(_name_word_char, first_word)))):
+            merged.append(span)
+            continue
+
+        # If a differently tagged span also contains the next word, keep that word's label.
+        first_word_end = right_start + len(first_word)
+        end = span.end if left == right or first_word_end == right_end else first_word_end
+        label = span.label if left == "user_name" else previous.label
+        merged[-1] = DetectedSpan(label=label, start=previous.start, end=end,
+                                  text=text[previous.start:end].strip(), placeholder=f"[{label}]")
+        if end < span.end:
+            merged.append(span.model_copy(update={"start": end, "text": text[end:span.end].strip()}))
+    return merged
+
+
+def _name_part_links(
+    name_keys: set[tuple[str, str]], split_names: dict[str, tuple[str, str]] | None = None,
+) -> dict[tuple[str, str], tuple[str, str]]:
+    candidates: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+    split_names = split_names or {}
+    for kind, full_name in name_keys:
+        if kind != "name":
+            continue
+        confirmed = split_names.get(full_name)
+        if confirmed:
+            splits = iter((confirmed,))
+        else:
+            splits = ((full_name[:index], full_name[index + 1:])
+                      for index, char in enumerate(full_name) if char == " ")
+        for first, last in splits:
+            for role, part in (("first_name", first), ("last_name", last)):
+                candidates[role, part].add((full_name, role))
+                if " " not in part or confirmed:
+                    candidates["alias", part].add((full_name, role))
+
+    links = {}
+    for kind, part in name_keys:
+        if kind == "name":
+            continue
+        # A model can label the standalone part differently from the adjacent full name.
+        matches = candidates.get((kind, part)) or candidates.get(("alias", part), ())
+        if len(matches) == 1:
+            links[kind, part] = next(iter(matches))
+    return links
+
+
+class _NameMention(NamedTuple):
+    span: DetectedSpan
+    kind: str
+    name: str
+
+
+def _find_adjacent_name_parts(
+    text: str, mentions: list[_NameMention], name_keys: set[tuple[str, str]],
+) -> tuple[dict[str, tuple[str, str]], dict[int, tuple[str, str]]]:
+    full_names: dict[str, tuple[str, str]] = {}
+    links: dict[int, tuple[str, str]] = {}
+    # Prefer explicitly tagged pairs. A separate mention can resolve a same-label pair.
+    pairs = sorted(pairwise(mentions), key=lambda pair: pair[0].kind == pair[1].kind)
+    for first, last in pairs:
+        if first.span.start in links or last.span.start in links:
+            continue
+        roles = (first.kind, last.kind)
+        if not (
+            roles == ("first_name", "last_name")
+            or (roles == ("last_name", "last_name") and ("first_name", first.name.casefold()) in name_keys)
+            or (roles == ("first_name", "first_name") and ("last_name", last.name.casefold()) in name_keys)
+        ):
+            continue
+        _, first_end = _trimmed_bounds(text, first.span)
+        last_start, _ = _trimmed_bounds(text, last.span)
+        gap = text[first_end:last_start]
+        if not gap or gap.strip(" \t\u00a0"):
+            continue
+        key = f"{first.name} {last.name}".casefold()
+        full_names.setdefault(key, (first.name, last.name))
+        links[first.span.start] = key, "first_name"
+        links[last.span.start] = key, "last_name"
+    return full_names, links
+
+
 def _pseudonymize_names(text: str, spans: list[DetectedSpan], device: str, use_nationality: bool) -> None:
-    predictor = None
-    replacements: dict[tuple[str, str], str] = {}
+    mentions: list[_NameMention] = []
     for span in spans:
         label = span.label.casefold()
         if label not in NAME_LABELS:
@@ -387,15 +502,56 @@ def _pseudonymize_names(text: str, spans: list[DetectedSpan], device: str, use_n
         name = NAME_TITLES.sub("", name)
         if not name:
             continue
-        kind = label
-        if label not in {"first_name", "last_name"}:
-            kind = "name" if " " in name else "first_name"
-        key = (kind, name.casefold())
+        kind = label if label in NAME_PART_LABELS else ("name" if " " in name else "alias")
+        mentions.append(_NameMention(span, kind, name))
+
+    name_keys = {(kind, name.casefold()) for _, kind, name in mentions}
+    adjacent_names, adjacent_links = _find_adjacent_name_parts(text, mentions, name_keys)
+    split_names = {key: (first.casefold(), last.casefold()) for key, (first, last) in adjacent_names.items()}
+    links = _name_part_links(name_keys | {("name", key) for key in split_names}, split_names)
+    linked_parts: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for key, (first, last) in split_names.items():
+        linked_parts[key]["first_name"].add(first)
+        linked_parts[key]["last_name"].add(last)
+    for (_, part), (full_name, role) in links.items():
+        linked_parts[full_name][role].add(part)
+
+    predictor = None
+    replacements: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}
+
+    def replacement_for(key: tuple[str, str], name: str, placeholder: str) -> tuple[str, dict[str, str]]:
+        nonlocal predictor
         if key not in replacements:
             if use_nationality and predictor is None:
                 predictor = _load_namebert(device)
-            replacements[key] = _fake_name(predictor, name, kind, span.placeholder)
-        span.placeholder = replacements[key]
+            kind, name_key = key
+            replacements[key] = _fake_name(
+                predictor, name, kind, placeholder,
+                source_parts=linked_parts.get(name_key) if kind == "name" else None,
+            )
+        return replacements[key]
+
+    # Generate full names first so earlier standalone mentions can reuse their parts.
+    for span, kind, name in mentions:
+        if kind == "name":
+            span.placeholder, _ = replacement_for((kind, name.casefold()), name, span.placeholder)
+    for key, (first, last) in adjacent_names.items():
+        replacement_for(("name", key), f"{first} {last}", "[private_person]")
+
+    for span, kind, name in mentions:
+        if kind == "name":
+            continue
+        name_key = name.casefold()
+        link = adjacent_links.get(span.start) or links.get((kind, name_key))
+        if link is not None:
+            full_name, role = link
+            _, fake_parts = replacements["name", full_name]
+            part = fake_parts.get(role)
+            if part and _name_scripts(part) <= _name_scripts(name):
+                span.placeholder = part
+                continue
+        generation_kind = "first_name" if kind == "alias" else kind
+        span.placeholder, _ = replacement_for((generation_kind, name_key), name, span.placeholder)
 
 
 def _faker_locale(country_label: str) -> str:
@@ -422,7 +578,14 @@ def _name_scripts(name: str) -> set[str]:
     return {script(char) for char in name if char.isalpha()} - {"Common", "Inherited"}
 
 
-def _fake_name(predictor: TextClassificationPipeline | None, name: str, kind: str, placeholder: str) -> str:
+def _fake_name(
+    predictor: TextClassificationPipeline | None,
+    name: str,
+    kind: str,
+    placeholder: str,
+    *,
+    source_parts: dict[str, set[str]] | None = None,
+) -> tuple[str, dict[str, str]]:
     source_scripts = _name_scripts(name)
     if predictor is None:
         locale = next(
@@ -437,13 +600,21 @@ def _fake_name(predictor: TextClassificationPipeline | None, name: str, kind: st
         faker.add_provider(ArabicLatinNameProvider)
     generate = getattr(faker, kind)
     for _ in range(10):
-        replacement = generate()
+        fake_parts = {}
+        if source_parts:
+            fake_parts = {"first_name": faker.first_name(), "last_name": faker.last_name()}
+            if any(" ".join(fake_parts[role].split()).casefold() in originals
+                   for role, originals in source_parts.items()):
+                continue
+            replacement = f"{fake_parts['first_name']} {fake_parts['last_name']}"
+        else:
+            replacement = generate()
         replacement_scripts = _name_scripts(replacement)
         if not replacement_scripts or (source_scripts and replacement_scripts - source_scripts):
             continue
         if " ".join(replacement.split()).casefold() != name.casefold():
-            return replacement
-    return placeholder
+            return replacement, fake_parts
+    return placeholder, {}
 
 
 def _build_redacted(text: str, spans: list[DetectedSpan], mode: str) -> str:
@@ -517,8 +688,10 @@ def _process(request: DUUIRequest) -> DUUIResponse:
             placeholder=f"[{item['entity_group']}]" if mode in (MODE_PLACEHOLDER, MODE_PSEUDO) else "",
         )
         for item in raw
-        if item["entity_group"] not in exclude_labels
     ]
+    if mode == MODE_PSEUDO and model != DEFAULT_MODEL:
+        spans = _merge_name_fragments(request.text, spans, exclude_labels)
+    spans = [span for span in spans if span.label not in exclude_labels]
     if mode == MODE_PSEUDO:
         _pseudonymize_names(request.text, spans, device, use_nationality=pseudo_use_nationality == "true")
 
